@@ -31,3 +31,19 @@ target_link_libraries(sensorfusion PUBLIC Threads::Threads m)
 add_executable(sensor_fusion src/main.c)
 target_compile_options(sensor_fusion PRIVATE ${SF_WARNINGS})
 target_link_libraries(sensor_fusion PRIVATE sensorfusion)
+
+add_executable(fusion_file tools/fusion_file.c)
+target_compile_options(fusion_file PRIVATE ${SF_WARNINGS})
+target_link_libraries(fusion_file PRIVATE sensorfusion)
+
+enable_testing()
+
+foreach(test_name test_fusion test_pipeline)
+  add_executable(${test_name} tests/${test_name}.c)
+  target_compile_options(${test_name} PRIVATE ${SF_WARNINGS})
+  target_link_libraries(${test_name} PRIVATE sensorfusion)
+  add_test(NAME ${test_name} COMMAND ${test_name})
+endforeach()
+
+add_test(NAME fusion_file_samples
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_file_tests.sh $<TARGET_FILE:fusion_file>)

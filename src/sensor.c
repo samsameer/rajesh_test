@@ -19,9 +19,9 @@ static double signal_next(sensor_signal *sig, double fault_rate, uint64_t *fault
         ++*faults;
         switch (sf_rng_next(&sig->rng) & 3u) {
         case 0:
-            return NAN;
+            return (double)NAN;
         case 1:
-            return INFINITY;
+            return (double)INFINITY;
         case 2:
             return -1.0 - 10.0 * sf_rng_unit(&sig->rng);
         default:
