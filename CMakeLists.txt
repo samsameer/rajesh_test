@@ -18,8 +18,16 @@ add_library(sensorfusion STATIC
   src/spsc_queue.c
   src/clock.c
   src/backoff.c
+  src/fusion.c
+  src/sensor.c
+  src/aggregator.c
+  src/writer.c
 )
 target_include_directories(sensorfusion PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(sensorfusion PUBLIC _POSIX_C_SOURCE=200809L)
 target_compile_options(sensorfusion PRIVATE ${SF_WARNINGS})
 target_link_libraries(sensorfusion PUBLIC Threads::Threads m)
+
+add_executable(sensor_fusion src/main.c)
+target_compile_options(sensor_fusion PRIVATE ${SF_WARNINGS})
+target_link_libraries(sensor_fusion PRIVATE sensorfusion)
