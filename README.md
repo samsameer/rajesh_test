@@ -20,6 +20,28 @@ More detail lives in `docs/`:
 
 ---
 
+## Requirements checklist
+
+| Requirement                                              | Where it's handled                                   |
+|----------------------------------------------------------|------------------------------------------------------|
+| Four sensors at 96 / 71 / 69.9 / 23 kHz, simulated       | `src/sensor.c`, one thread each                      |
+| Streams aggregated and temporally sorted                 | `src/aggregator.c`, k-way merge                      |
+| Same-microsecond timestamps: keep the lower-frequency sensor | `src/aggregator.c`, scan in ascending frequency  |
+| No value missed apart from conflicts                     | bounded queues with back-pressure; checked in `test_end_to_end_pipeline` |
+| Fusion 1: geometric mean of the N most recent readings   | `sf_fusion_geometric_mean` in `src/fusion.c`         |
+| Fusion 2: pairwise-product fusion                        | `sf_fusion_pairwise_strength` in `src/fusion.c`      |
+| Invalid values defined per algorithm, results always valid | "What counts as invalid" below; `test_invalid_inputs_rejected` |
+| N > 4096, set on the command line                        | `-n / --window`, smaller values rejected             |
+| Runs for 5 s, keeps writing until the queue is empty     | `src/main.c`, drain-then-close shutdown              |
+| Output file format                                       | `src/writer.c`; example below                        |
+| Unit test that loads a one-number-per-line file          | `tools/fusion_file.c`, `tests/run_file_tests.sh`     |
+| CMake or Makefile build                                  | both provided                                        |
+| Build, run and test instructions                         | this file, plus `docs/TESTING.md`                    |
+| Design decisions, complexity, challenges, limitations    | sections below                                       |
+| External libraries justified                             | none used                                            |
+
+---
+
 ## Quick start
 
 ```sh
