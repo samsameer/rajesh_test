@@ -84,6 +84,31 @@ static int parse_line(char *line, double *out)
     return 1;
 }
 
+static bool read_line(FILE *fp, char **line, size_t *cap)
+{
+    if (!*line) {
+        *cap = 256;
+        *line = malloc(*cap);
+        if (!*line)
+            return false;
+    }
+    size_t len = 0;
+    for (;;) {
+        if (!fgets(*line + len, (int)(*cap - len), fp))
+            return len > 0;
+        len += strlen(*line + len);
+        if (len > 0 && (*line)[len - 1] == '\n')
+            return true;
+        if (len + 1 < *cap)
+            return true;
+        char *grown = realloc(*line, *cap * 2);
+        if (!grown)
+            return false;
+        *line = grown;
+        *cap *= 2;
+    }
+}
+
 static int load_file(const char *path, value_list *values, file_stats *stats)
 {
     FILE *fp = fopen(path, "r");
@@ -95,7 +120,7 @@ static int load_file(const char *path, value_list *values, file_stats *stats)
     char *line = NULL;
     size_t cap = 0;
     int rc = 0;
-    while (getline(&line, &cap, fp) != -1) {
+    while (read_line(fp, &line, &cap)) {
         ++stats->lines;
         double v;
         const int r = parse_line(line, &v);

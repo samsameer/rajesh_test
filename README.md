@@ -58,8 +58,46 @@ cmake --build build-cmake -j
 ctest --test-dir build-cmake --output-on-failure
 ```
 
-You need a C11 compiler (GCC or Clang), `make` or CMake 3.13+, and a POSIX
-system. I've built and tested it on Linux with GCC 13 and Clang.
+You need a C11 compiler (GCC or Clang) and `make` or CMake 3.13+. It builds
+on Linux, macOS and Windows (MinGW-w64).
+
+### Windows
+
+Plain `cmd` has no `make` or C compiler, so pick one of these:
+
+**MSYS2 (native `.exe` files)**
+
+1. Install MSYS2 from <https://www.msys2.org>.
+2. Open the **MSYS2 UCRT64** terminal and install the tools:
+   ```sh
+   pacman -S --needed mingw-w64-ucrt-x86_64-gcc make git
+   ```
+3. Build and test:
+   ```sh
+   git clone https://github.com/samsameer/rajesh_test && cd rajesh_test
+   make LDFLAGS=-static
+   make test
+   ```
+4. The programs are ordinary Windows executables, statically linked, so you
+   can also run them straight from `cmd`:
+   ```bat
+   build\sensor_fusion.exe -o fusion_output.txt
+   build\fusion_file.exe -m both dataset_1_20250719_104255.csv
+   ```
+
+**CMake with MinGW** (if CMake and MinGW-w64 are already on your `PATH`):
+
+```bat
+cmake -S . -B build-cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build build-cmake
+ctest --test-dir build-cmake --output-on-failure
+build-cmake\sensor_fusion.exe
+```
+
+**WSL**: run `wsl --install` once, then follow the Linux steps inside
+Ubuntu.
+
+MSVC isn't supported, because it lacks C11 `<stdatomic.h>` and POSIX threads.
 
 ## Running it
 
@@ -236,7 +274,9 @@ stop.
   That's mathematically right, but for a real temperature sensor you might
   prefer to treat 0 as a fault.
 - Up to 8 sensors are supported (a compile-time constant).
-- POSIX only (`pthread`, `clock_gettime`, `nanosleep`, `getline`).
+- Needs POSIX threads and clocks: Linux, macOS, or MinGW-w64 on Windows.
+  MSVC is not supported. On Windows the OS sleep granularity is about 1 ms,
+  so sensors wake in coarser batches; the data and ordering are unchanged.
 
 ## External libraries
 

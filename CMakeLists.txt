@@ -11,6 +11,10 @@ endif()
 
 find_package(Threads REQUIRED)
 
+if(MINGW)
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+endif()
+
 set(SF_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes
                 -Wmissing-prototypes -Wdouble-promotion)
 
@@ -45,5 +49,8 @@ foreach(test_name test_fusion test_pipeline)
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 
-add_test(NAME fusion_file_samples
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_file_tests.sh $<TARGET_FILE:fusion_file>)
+find_program(SF_SH sh)
+if(SF_SH)
+  add_test(NAME fusion_file_samples
+           COMMAND ${SF_SH} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_file_tests.sh $<TARGET_FILE:fusion_file>)
+endif()
