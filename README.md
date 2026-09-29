@@ -1,63 +1,34 @@
 # Sensor Fusion Pipeline
 
-Real-time aggregation of four synchronized temperature sensor streams
-(96 kHz, 71 kHz, 69.9 kHz, 23 kHz) into a single temporally sorted stream, with
-two sliding-window fusion functions evaluated over the **N most recent**
-readings.
+This project simulates four synchronized temperature sensors (96 kHz, 71 kHz,
+69.9 kHz and 23 kHz). It merges their readings into one stream sorted by time
+and, for every new reading, computes two fusion values over the N most recent
+readings:
 
-- Language: C11 + POSIX threads
-- Build: GNU Make or CMake
-- Dependencies: none beyond libc, libm and pthreads
+1. the geometric mean, and
+2. the square root of the normalised sum of pairwise products.
 
-```
- Sensor 1 (96 kHz)   ──► SPSC ─┐
- Sensor 2 (71 kHz)   ──► SPSC ─┤                        ┌─► Fusion 1 (geometric mean)
- Sensor 3 (69.9 kHz) ──► SPSC ─┼─► Aggregator ─► SPSC ──┤
- Sensor 4 (23 kHz)   ──► SPSC ─┘  (k-way merge)         └─► Fusion 2 (pairwise strength)
-                                                                   │
-                                                                   ▼
-                                                           fusion_output.txt
-```
+It's written in plain C11 with POSIX threads and has no third-party
+dependencies.
 
----
+More detail lives in `docs/`:
 
-## 1. Repository layout
-
-```
-include/sf/        public headers
-  sample.h         sample record {timestamp_us, value, sensor_id}
-  spsc_queue.h     lock-free single-producer/single-consumer ring buffer
-  sensor.h         simulated sensor (thread + timestamp arithmetic)
-  aggregator.h     k-way temporal merge with conflict resolution
-  fusion.h         sliding-window fusion engine
-  writer.h         buffered, timestamped output writer
-  backoff.h        spin -> yield -> sleep wait strategy
-  clock.h, rng.h   monotonic clock, SplitMix64 generator
-src/               implementation + main.c (application)
-tools/fusion_file.c  loads a text file and prints both fusion functions
-tests/             unit tests, file-based tests, sample data
-```
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): how the pieces fit
+  together, with diagrams
+- [`docs/TESTING.md`](docs/TESTING.md): what the tests cover and how to check
+  results against the sample datasets
 
 ---
 
-## 2. Build, run, test
-
-### Make
+## Quick start
 
 ```sh
-make                 # builds build/sensor_fusion, build/fusion_file and the tests
-make test            # unit tests + file-based tests
-make run             # 5 s acquisition -> fusion_output.txt
-make run ARGS="-n 10000 -o out.txt"
-make sanitize        # AddressSanitizer + UndefinedBehaviorSanitizer test run
-make tsan            # ThreadSanitizer test run
-make clean
+make            # build everything into ./build
+make test       # run all the tests
+make run        # 5 second acquisition, writes fusion_output.txt
 ```
 
-Extra compiler flags are appended, never substituted:
-`make CFLAGS=-Werror`, `make CC=clang`, `make OPT="-O3 -march=native"`.
-
-### CMake
+If you prefer CMake:
 
 ```sh
 cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
@@ -65,24 +36,32 @@ cmake --build build-cmake -j
 ctest --test-dir build-cmake --output-on-failure
 ```
 
-### Running the pipeline
+You need a C11 compiler (GCC or Clang), `make` or CMake 3.13+, and a POSIX
+system. I've built and tested it on Linux with GCC 13 and Clang.
+
+## Running it
 
 ```sh
-./build/sensor_fusion [options]
-
-  -n, --window N         number of most recent readings (N > 4096, default 8192)
-  -d, --duration MS      acquisition time in milliseconds (default 5000)
-  -o, --output PATH      output file (default fusion_output.txt)
-  -m, --f2-norm MODE     formula | pair-mean   (see §3.6, default formula)
-  -f, --fault-rate P     probability of an injected invalid reading (default 0.0005)
-  -s, --seed S           random seed (default derived from the clock)
-  -k, --stride K         write every K-th fusion result (default 1)
-  -b, --batch-us US      sensor wake-up interval in microseconds (default 100)
+./build/sensor_fusion                    # defaults: N = 8192, 5 seconds
+./build/sensor_fusion -n 5000 -o run.txt
+./build/sensor_fusion --help
 ```
 
-`N <= 4096` is rejected, as required by the specification.
+| Option              | What it does                                              | Default             |
+|---------------------|-----------------------------------------------------------|---------------------|
+| `-n, --window N`    | how many recent readings the fusion functions look at     | 8192                |
+| `-d, --duration MS` | how long the sensors run, in milliseconds                 | 5000                |
+| `-o, --output PATH` | where to write results                                    | `fusion_output.txt` |
+| `-m, --f2-norm`     | `formula` or `pair-mean` (see "The one ambiguity" below)  | `formula`           |
+| `-f, --fault-rate`  | chance that a sensor sends a bad value, 0 to 1            | 0.0005              |
+| `-s, --seed`        | random seed, for repeatable runs                          | taken from the clock |
+| `-k, --stride K`    | only write every K-th result                              | 1                   |
+| `-b, --batch-us`    | how often sensor threads wake up, in microseconds         | 100                 |
 
-Output file:
+N has to be bigger than 4096, as the assignment requires. Smaller values are
+rejected with a clear message.
+
+The output file looks like this:
 
 ```
 [10:11:05.787]: Program started
@@ -97,234 +76,156 @@ Count of generated values for each sensor:
 [10:11:10.788]: Program finished
 ```
 
-A run summary (per-sensor forwarded / conflict-discarded / injected-invalid
-counts, rejected readings, elapsed time, seed) is printed to `stderr` so the
-output file keeps exactly the required format.
+A short run summary goes to the terminal (stderr), so the output file keeps
+exactly the requested format. The summary shows how many samples each sensor
+lost to timestamp collisions, how many bad values were rejected, how long the
+run took, and the seed, so you can reproduce the run.
 
-### Testing the fusion functions against a file
+## Checking a data file
+
+`fusion_file` reads one number per line and prints both fusion values:
 
 ```sh
 ./build/fusion_file dataset_1_20250719_104255.csv
-./build/fusion_file -m both dataset_*.csv          # print both F2 normalisations
-./build/fusion_file -n 5000 data.txt               # only the last 5000 valid readings
+./build/fusion_file -m both dataset_*.csv     # show both fusion-2 variants
+./build/fusion_file -n 5000 readings.txt      # only the last 5000 valid readings
 ```
 
-The tool reads one number per line. If a line has several fields separated by
-`,` `;` or whitespace, the last field is used, so `index,value` CSV files work
-unchanged. Header lines and anything that does not parse as a number are
-counted as malformed and skipped; values outside `[0, 100]`, `NaN` and `inf`
-are counted as rejected. By default the window equals the number of valid
-readings in the file.
-
-Test inventory:
-
-| Suite                   | What it proves                                                                 |
-|-------------------------|--------------------------------------------------------------------------------|
-| `test_fusion`           | closed-form results, window eviction, zero handling, invalid rejection, range boundaries, O(N²) brute-force equivalence, 3 M-sample drift check against a `long double` reference, formatter |
-| `test_pipeline`         | SPSC ordering, wraparound, 2 M-item threaded FIFO; timestamp arithmetic; deterministic merge + conflict resolution; end-to-end run checked against an independent count of distinct timestamps |
-| `run_file_tests.sh`     | `fusion_file` on `tests/data/*` (plain, CSV, malformed lines, zeros, windowing) |
+It's forgiving about input. For a line like `index,value` it uses the last
+field. It skips header lines and anything else that isn't a number, and
+rejects values outside 0–100. It tells you how many lines fell into each
+bucket, so nothing gets ignored silently.
 
 ---
 
-## 3. Design decisions
+## Design decisions
 
-### 3.1 Time base and timestamps
+The short version is below. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+has diagrams and the longer reasoning.
 
-The four clocks are synchronized, so every sensor shares one origin. Sample `k`
-of a sensor with frequency `f` is stamped
+**Integer timestamps.** Sample `k` of a sensor at frequency `f` is stamped
+`floor(k × 10⁶ / f)` µs, computed entirely in integers (frequencies are stored
+in millihertz). The spec defines a collision as "identical to the
+microsecond", and floating-point periods would make that check depend on
+rounding. With integers it's exact and repeatable.
+
+**One producer, one consumer per queue.** Each sensor has its own queue into
+the aggregator, and the aggregator has one queue into the fusion stage. With
+exactly one writer and one reader per queue, I could use a simple lock-free
+ring buffer with no mutexes. Queues are bounded, and a full queue makes the
+writer wait rather than drop data, because the spec says sensors never miss a
+value.
+
+**Merge by waiting for everyone.** The aggregator only forwards a sample once
+every sensor that's still running has something queued. Only then can it be
+sure it's holding the earliest timestamp. On a tie it keeps the
+lower-frequency sensor and drops the rest, as the spec says.
+
+**O(1) fusion functions.** Recomputing both functions over the whole window
+for every sample would cost O(N), or O(N²) for fusion 2 done naively. Instead
+the engine keeps three running sums (Σ ln x, Σ x, Σ x²) and updates them when
+a value enters or leaves the window. Fusion 2 uses the identity
+`Σᵢ≠ⱼ xᵢxⱼ = (Σx)² − Σx²`.
+
+**Working in log space.** Multiplying thousands of numbers between 0 and 100
+overflows (or underflows) a `double` almost straight away, so the geometric
+mean is computed as `exp(mean of ln x)`. Zero is a legitimate reading, but
+`ln 0` is minus infinity, so zeros are counted separately. While a zero is in
+the window the answer is exactly 0, and it recovers once the zero slides out.
+
+**Controlling drift.** Running sums pick up rounding error over millions of
+updates. I use compensated (Neumaier) summation and also recompute the sums
+exactly every N samples. The recompute is O(N) but only happens once per N
+samples, so it stays O(1) on average. Please don't build with `-ffast-math`,
+which would optimise the compensation away.
+
+**What counts as invalid.** NaN, infinity, negative numbers and anything
+above 100. These either break the maths (NaN or infinity would poison the
+running sums forever, and `ln` of a negative is undefined) or fall outside
+the stated range. Rejected values never enter the window, so the fusion
+values are always finite.
+
+**A fast output path.** A 5-second run writes about 2.3 million lines
+(~110 MB), so the writer turned out to be the real bottleneck, not the maths.
+It uses a 1 MB buffer, rebuilds the `HH:MM:SS` part of the timestamp only
+when the second changes, and formats numbers with a small fixed-point routine
+instead of `printf("%f")`.
+
+### The one ambiguity
+
+The assignment describes fusion 2 as "the square root of the **average** of
+all distinct pairwise products", but the printed formula divides by N, not by
+the number of pairs. The two differ by a factor of √(N−1): for readings that
+are all 50, one gives about 4500 and the other gives 50.
+
+I couldn't tell which was intended, so both are there:
+
+- `formula` (the default) follows the printed equation: `sqrt((S² − Q) / N)`
+- `pair-mean` follows the wording: `sqrt((S² − Q) / (N(N−1)))`
+
+Running `./build/fusion_file -m both` on the provided datasets and comparing
+with `Results.txt` settles it.
+
+---
+
+## Complexity
+
+| Operation                          | Time                | Space           |
+|------------------------------------|---------------------|-----------------|
+| Evaluate fusion 1 or fusion 2      | O(1)                | –               |
+| Add a reading (and evict the oldest) | O(1) amortised    | –               |
+| Sliding window                     | –                   | O(N), 16 bytes per reading |
+| Aggregator, per sample             | O(number of sensors) | bounded queues |
+
+In practice a 5-second run handles about 260,000 samples per second end to
+end, writing every result, and finishes a few milliseconds after the sensors
+stop.
+
+## Technical challenges
+
+- **Getting "simultaneous" right.** Floating-point periods look natural but
+  make the microsecond comparison depend on rounding. Integer millihertz
+  arithmetic makes it exact.
+- **Ordering without losing anything.** A merge that forwards too early can
+  emit a sample and then receive an earlier one from a slower sensor. Making
+  the aggregator wait for every live sensor, and using a "closed" flag to take
+  finished sensors out of the picture, solved it cleanly.
+- **Numerical stability.** A sliding window of logs and squares looks simple
+  until you run it for millions of samples. The zero counter, compensated
+  sums and periodic recompute together keep results within about 1e-11 of an
+  exact recomputation.
+- **Memory ordering.** Lock-free queues are easy to get subtly wrong, so the
+  whole test suite also runs under ThreadSanitizer (`make tsan`).
+- **Output speed.** Writing a line for every sample at 260 kHz is a lot of
+  text. The per-line costs are number formatting and turning the clock into
+  `HH:MM:SS`, so those are the two things the writer optimises.
+
+## Limitations
+
+- Timing is "soft" real time. Sensors wake in ~100 µs batches rather than
+  exactly on every sample. The timestamps are still exact, and ordering isn't
+  affected.
+- If the disk can't keep up, the sensors slow down rather than drop data. The
+  run then takes a little over 5 seconds but stays complete and correct.
+- Collisions are resolved by timestamp before values are checked, as the rule
+  is written. So if the lower-frequency sensor's value at a collision is
+  invalid, the other sensor's value isn't used in its place.
+- A single zero reading pins the geometric mean at 0 for the next N samples.
+  That's mathematically right, but for a real temperature sensor you might
+  prefer to treat 0 as a fault.
+- Up to 8 sensors are supported (a compile-time constant).
+- POSIX only (`pthread`, `clock_gettime`, `nanosleep`, `getline`).
+
+## External libraries
+
+None. Only the C standard library, `libm` and POSIX threads.
+
+## Project layout
 
 ```
-t_k = floor(k * 1e6 / f)  microseconds
+include/sf/          headers, one per module
+src/                 implementation, plus main.c for the application
+tools/fusion_file.c  command-line tool for checking data files
+tests/               unit tests, file-based tests and sample data
+docs/                architecture and testing notes
 ```
-
-computed in pure integer arithmetic with `f` stored in millihertz
-(69.9 kHz = 69 900 000 mHz). Floating-point periods would drift and would make
-the "identical to the microsecond" rule nondeterministic; integer arithmetic
-makes the timestamps exact and reproducible.
-
-Each sensor thread is paced by the monotonic clock: it wakes every
-`--batch-us` (100 µs), emits every sample whose timestamp has elapsed and sleeps
-again. Sub-10 µs sleeps are not achievable on a general-purpose OS, so batching
-keeps real-time behaviour without busy-waiting a core per sensor. Sample count
-over the acquisition window is exact:
-`ceil(duration_us * f / 1e6)` → 480 000 / 355 000 / 349 500 / 115 000 for 5 s.
-
-### 3.2 Sensor signal
-
-A bounded, mean-reverting random walk around a per-sensor anchor in
-`[20, 80]`, clamped to `[0, 100]`. With `--fault-rate` > 0 a small fraction of
-readings is replaced by `NaN`, `+inf`, a negative value or a value above 100 to
-exercise the validation path continuously.
-
-### 3.3 Queues
-
-Every hop is a bounded lock-free **SPSC ring buffer** (power-of-two capacity,
-acquire/release atomics, head and tail on separate cache lines, each side
-caching the other side's index to avoid cache-line ping-pong). SPSC is the
-exact topology of the pipeline, so no locks or CAS loops are needed. Queues are
-bounded; a full queue applies back-pressure (the producer waits) instead of
-dropping, because sensors are defined as perfect and no value may be lost.
-
-A `closed` flag published with release semantics after the last push lets the
-consumer distinguish "empty for now" from "finished".
-
-### 3.4 Aggregation and conflict resolution
-
-The aggregator performs a k-way merge. It only emits when every live source has
-a head sample available, which guarantees global temporal order: the smallest
-head is the smallest timestamp that will ever be produced.
-
-Sources are scanned in **ascending frequency** order and the minimum is chosen
-with a strict `<`, so on equal timestamps the lowest-frequency sensor wins.
-All other heads carrying the same microsecond timestamp are then discarded and
-counted. Each sensor's timestamps are strictly increasing (period > 1 µs), so a
-conflict involves at most one sample per sensor. At `t = 0` all four collide
-and sensor 4 (23 kHz) is kept.
-
-### 3.5 Fusion engine – O(1) per sample
-
-A ring buffer of the last `N` accepted readings stores `(x, ln x)` pairs.
-Three running sums are maintained incrementally on insert/evict:
-
-| Quantity         | Used for                                  |
-|------------------|-------------------------------------------|
-| `L = Σ ln xᵢ`    | geometric mean `exp(L / N)`               |
-| `S = Σ xᵢ`       | pairwise sum `Σ_{i≠j} xᵢxⱼ = S² − Q`      |
-| `Q = Σ xᵢ²`      |                                           |
-
-**Geometric mean.** The product of thousands of values in `[0, 100]`
-overflows or underflows `double` immediately, so it is evaluated in log space.
-`ln 0 = −∞` would poison the running sum, therefore zeros are tracked with a
-counter instead: if any zero is in the window the result is exactly `0`, and the
-log sum is kept only over positive values, so the value recovers correctly as
-soon as the zero leaves the window.
-
-**Pairwise strength.** The double sum over `i ≠ j` is `O(N²)`; the identity
-`Σ_{i≠j} xᵢxⱼ = (Σxᵢ)² − Σxᵢ²` reduces it to `O(1)`. Because
-`Q / S² ≈ 1/N`, the subtraction does not suffer catastrophic cancellation; a
-tiny negative result from rounding is clamped to `0` before `sqrt`.
-
-**Numerical drift.** Sliding sums accumulate rounding error over millions of
-add/subtract cycles. Two measures bound it:
-
-1. Neumaier-compensated summation for all three sums.
-2. A full rebase (exact recomputation from the buffer) every `N` insertions.
-   This costs `O(N)` once per `N` samples, i.e. amortised `O(1)`.
-
-The drift test pushes 3 million samples whose magnitude alternates between
-`1e-3` and `100` and matches a `long double` reference to 1e-11 relative.
-The code must not be built with `-ffast-math`, which would remove the
-compensation terms.
-
-**Invalid values.** Derived from what each algorithm can consume and the
-specified domain:
-
-| Input                   | Why invalid                                   | Handling                    |
-|-------------------------|-----------------------------------------------|-----------------------------|
-| `NaN`, `±inf`           | poisons every running sum permanently         | rejected                    |
-| `x < 0`                 | `ln x` undefined; outside domain              | rejected                    |
-| `x > 100`               | outside domain                                | rejected                    |
-| `x = 0`                 | valid reading; `ln 0 = −∞`                    | accepted, tracked by counter|
-
-Rejected readings never enter the window, so the fusion values are always
-finite. Results are only written once the window holds `N` valid readings.
-Geometric mean and pair-mean outputs are clamped to `[0, 100]` to absorb
-last-ulp rounding.
-
-### 3.6 Fusion function 2 normalisation
-
-The specification's prose says "square root of the **average** of all distinct
-pairwise products", while the printed formula divides the sum over `i ≠ j` by
-`N`. These differ by a factor of `√(N−1)`. Both are implemented:
-
-| `--f2-norm`         | Formula                                    | Constant input `c` gives |
-|---------------------|--------------------------------------------|--------------------------|
-| `formula` (default) | `sqrt( (S² − Q) / N )`                     | `c·√(N−1)`               |
-| `pair-mean`         | `sqrt( (S² − Q) / (N(N−1)) )`              | `c`                      |
-
-The default follows the formula as printed. `fusion_file -m both` prints both
-variants so the reference `Results.txt` identifies the intended one.
-
-### 3.7 Output writer
-
-The output volume is large (≈ 2.3 M lines, ≈ 110 MB for a 5 s run with
-stride 1), so formatting is on the hot path:
-
-- 1 MiB `stdio` buffer; each result pair is one `fwrite`.
-- The `[HH:MM:SS.` prefix is recomputed only when the second changes
-  (`localtime_r` is not called per line); milliseconds are written directly.
-- Values use a dedicated fixed-point formatter (6 decimals) instead of
-  `printf("%f")`, with a `snprintf` fallback for non-finite or huge values.
-
-`--stride K` reduces the file size when the full per-sample trace is not
-needed.
-
-### 3.8 Threads
-
-| Thread       | Role                                               |
-|--------------|----------------------------------------------------|
-| 4 × sensor   | generate and push samples, paced by the clock      |
-| aggregator   | k-way merge, conflict resolution                   |
-| main         | fusion + output, runs until the aggregate queue is drained |
-
-Waiting uses an adaptive backoff: `pause` spin → `sched_yield` → 50 µs sleep, so
-idle stages cost almost no CPU and busy stages react within nanoseconds.
-
----
-
-## 4. Complexity
-
-| Operation                     | Time              | Space        |
-|-------------------------------|-------------------|--------------|
-| Fusion 1 / Fusion 2 query     | O(1)              | –            |
-| Insert with eviction          | O(1) amortised (O(N) rebase every N inserts) | – |
-| Fusion window                 | –                 | O(N) (16 bytes per reading) |
-| Aggregator per emitted sample | O(k), k = 4 sensors | O(queue capacity) |
-| Naive reference Fusion 2      | O(N²)             | O(N)         |
-
-For a 5 s run the pipeline sustains ≈ 260 k samples/s end-to-end, including
-writing every result, and finishes within a few milliseconds after the
-acquisition window closes.
-
----
-
-## 5. Technical challenges
-
-1. **Exact simultaneity.** Deciding "identical to the microsecond" requires a
-   deterministic time base; integer millihertz arithmetic solves it and makes
-   runs reproducible.
-2. **Ordering without losing data.** A merge may only emit when every live
-   stream has a pending sample; otherwise a late sample could arrive with a
-   smaller timestamp. The `closed` flag removes finished streams from the
-   decision.
-3. **Numerically stable sliding window.** Log-space product, zero counter,
-   compensated sums and periodic rebase together keep the O(1) algorithm
-   within 1e-11 of the exact result.
-4. **Memory ordering.** The SPSC queues rely on acquire/release pairs only;
-   the full test suite is run under ThreadSanitizer (`make tsan`).
-5. **Output throughput.** The file writer, not the math, is the bottleneck;
-   the prefix cache and custom formatter keep it well above real time.
-
----
-
-## 6. Implementation limitations
-
-- Real-time pacing is soft: sensors emit in ~100 µs batches rather than at
-  exact per-sample instants. Timestamps are exact regardless, and ordering is
-  unaffected.
-- If the output device is slower than the sensor rate, back-pressure makes the
-  sensors lag wall-clock time instead of dropping data; the run then takes
-  longer than 5 s but remains complete and correct.
-- Conflict resolution is applied on timestamps before validation, as the rule
-  states; if the lower-frequency sensor's reading is invalid, the discarded
-  higher-frequency reading is not used as a substitute.
-- A single zero in the window forces the geometric mean to `0` for the next
-  `N` samples, which is mathematically correct but may not be desirable for a
-  physical temperature sensor.
-- The aggregator supports up to 8 sources (compile-time constant).
-- POSIX-only (`pthread`, `clock_gettime`, `nanosleep`, `getline`); tested on
-  Linux with GCC 13 and Clang.
-
-## 7. External libraries
-
-None. Only the C standard library, `libm` and POSIX threads are used.
