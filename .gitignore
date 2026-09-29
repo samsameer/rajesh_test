@@ -1,0 +1,6 @@
+build/
+build-*/
+fusion_output.txt
+*.o
+*.d
+*.a
